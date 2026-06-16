@@ -35,14 +35,14 @@ function POMDPs.solve(solver::RHSVISolver, env::X; return_pointset = false) wher
         end
     end
 
-    tree = initialize_RHSVITree(env, solver)
+    tree::RHSVITree{X} = initialize_RHSVITree(env, solver)
 
     i,j = 1, 0
     while (rel_value_gap(tree, 1) > solver.epsilon) && (time()-t0 < solver.max_time) && (i < solver.max_iters)
         VERBOSE && println("\nIteration $i (Vs: $(tree.Vlower[1]), $(tree.Vupper[1])):")
         sampled_bidxs = [1]
-        bidx = 1
-        h = 0
+        bidx::Int64 = 1
+        h::Int64 = 0
         while ( value_gap(tree, bidx) * (discount(tree.env)^(h)) >= tree.Vlower[1] * solver.epsilon &&
                 h < solver.max_depth &&
                 !isterminalbelief(tree.env, tree.B[bidx]))
@@ -90,8 +90,8 @@ end
 #     oidx::Int
 # end
 
-@kwdef mutable struct RHSVITree
-    env
+@kwdef mutable struct RHSVITree{M}
+    env::M where M<:POMDP
     C::ModelSizes
 
     B::Vector{DiscreteHashedBelief}             = DiscreteHashedBelief[] 
@@ -101,7 +101,7 @@ end
     Vlower::Vector{Float64}                     = Float64[]
     Qupper::Vector{Vector{Float64}}             = Vector{Vector{Float64}}()
     Qlower::Vector{Vector{Float64}}             = Vector{Vector{Float64}}()
-    Uncertainty::Vector{Float64}                = Vector{Vector{Float64}}()
+    Uncertainty::Vector{Float64}                = Float64[]
 
     needs_backup::Vector{Bool}                  = Bool[]
 
@@ -109,10 +109,10 @@ end
     Alphas_protected::Int                            = 1
     B_pointset::BitVector                 = BitVector()
     B_expanded::BitVector                 = BitVector()
-    backup_version                                          = CONVEX_BACKUP
+    backup_version::Int64                            = CONVEX_BACKUP
 
-    extra_beliefs                                           = DiscreteHashedBelief[]
-    extra_upper_values                                      = Float64[]
+    extra_beliefs::Vector{DiscreteHashedBelief} = DiscreteHashedBelief[]
+    extra_upper_values::Vector{Float64}         = Float64[]
 end
 
 function initialize_RHSVITree(env::X, solver::RHSVISolver; Alphas=[], Vs_init=nothing, extra_beliefs=nothing, extra_upper_values=nothing) where X<:POMDP
@@ -140,7 +140,7 @@ function initialize_RHSVITree(env::X, solver::RHSVISolver; Alphas=[], Vs_init=no
 
     append!(Alphas, solve(solver.lowerbound_solver, env).alphas)
 
-    tree = RHSVITree(
+    tree::RHSVITree{X} = RHSVITree{X}(
         env=env,
         C=constants,
         Vsupper=Vs_init,
@@ -162,7 +162,7 @@ end
 The exploration function from HSVI (Alg. 2). 
 Heuristicall chooses next sucessor belief of bidx to explore.
 """
-function explore(tree, bidx)
+function explore(tree::RHSVITree{M}, bidx::Int64) where M<:POMDP
     !(tree.B_expanded[bidx]) && expand_node!(tree, bidx)
     bestQ = maximum(tree.Qupper[bidx])
     aidxs = filter(aidx -> isapprox(tree.Qupper[bidx][aidx], bestQ), 1:length(actions(tree.env)))
@@ -173,9 +173,9 @@ end
 """
 Recomputes upper- and lower bounds for all beliefs visited in counter-chronological order
 """
-function tree_backup(tree::RHSVITree, sampled_bidxs::Vector; iteration=0)
+function tree_backup(tree::RHSVITree{M}, sampled_bidxs::Vector; iteration=0) where M<:POMDP
     bidxlast = sampled_bidxs[end]
-    !tree.B_expanded[bidxlast] && expand_node!(tree, sampled_bidxs[end])
+    !tree.B_expanded[bidxlast] &&  (expand_node!(tree, sampled_bidxs[end]))
     tree.Uncertainty[bidxlast] = 0.0
     for bidx in reverse(sampled_bidxs)
         tree_backup(tree, bidx; iteration=iteration)
@@ -185,7 +185,7 @@ end
 """
 Prune beliefs and alpha vectors
 """
-function prune!(tree::RHSVITree)
+function prune!(tree::RHSVITree{M}) where M<:POMDP
     # HSVI only prunes these sporadically, but we prune them after each iteration, 
     # since the complexity of our exploration grows massively with |Alphas|
     prune_beliefs!(tree)
@@ -203,7 +203,7 @@ function initialize_node(tree, b)
 
     push!(tree.B, b)
     bidx = length(tree.B)
-    push!(tree.Bps, [])
+    push!(tree.Bps, Vector{SucessorBelief}())
     push!(tree.B_expanded, false)
     push!(tree.B_pointset, false)
 
@@ -212,8 +212,8 @@ function initialize_node(tree, b)
     push!(tree.Vupper, Vupper)
     push!(tree.Uncertainty, Vupper - Vlower)
     push!(tree.needs_backup, true)
-    push!(tree.Qlower, [])
-    push!(tree.Qupper, [])
+    push!(tree.Qlower, Float64[])
+    push!(tree.Qupper, Float64[])
 
     return bidx
 end
@@ -221,23 +221,26 @@ end
 """
 Expands a belief node: computes successor beliefs & Q-values.
 """
-function expand_node!(tree::RHSVITree, bidx::Int64)
-    alphas = AlphaVector[]
+function expand_node!(tree::RHSVITree{M}, bidx::Int64) where M<:POMDP
+    alphas::Vector{AlphaVector} = Vector{AlphaVector}(undef, tree.C.na)
     for a in 1:tree.C.na
-        push!(tree.Bps[bidx], [])
-        Qlower::Float64, alpha::AlphaVector, Bdist = backup(tree.env, tree.B[bidx], a, tree.Alphas, version=tree.backup_version)
-        push!(alphas, alpha)
-        for ((o,bp),p) in weighted_iterator(Bdist)
-            bpidx = initialize_node(tree, bp)
-            push!(tree.Bps[bidx][a], SucessorBelief(bpidx, p, o))
+        push!(tree.Bps[bidx], Vector{SucessorBelief}())
+        Qlower, alpha, Bdist = backup(tree.env, tree.B[bidx], a, tree.Alphas, version=tree.backup_version)
+        if Qlower != NoBackup()    
+            alphas[a] = alpha
+            for ((o,bp),p) in weighted_iterator(Bdist)
+                bpidx = initialize_node(tree, bp)
+                push!(tree.Bps[bidx][a], SucessorBelief(bpidx, p, o))
+            end
+            push!(tree.Qlower[bidx], Qlower)
+            push!(tree.Qupper[bidx], upperbound(tree, bidx, a))
         end
-        push!(tree.Qlower[bidx], Qlower)
-        push!(tree.Qupper[bidx], upperbound(tree, bidx, a))
     end
     tree.B_expanded[bidx] = true
     tree.B_pointset[bidx] = true
-    tree.Alphas, isupdated = addDominantAlphas(alphas, tree.Alphas, tree.B[tree.B_pointset], alphas_protected=1)
-    isupdated && (tree.needs_backup = trues(length(tree.needs_backup)))
+    tree.Alphas, isupdated::Bool = addDominantAlphas(alphas, tree.Alphas, tree.B[tree.B_pointset], alphas_protected=1)
+    isupdated && (tree.needs_backup = fill(true, length(tree.needs_backup)))
+    return isupdated
 end
 
 """
@@ -249,7 +252,7 @@ belief_exists(tree, b) = nothing
 #              Belief Pruning
 #########################################
 
-function prune_beliefs!_(tree::RHSVITree)
+function prune_beliefs!_(tree::RHSVITree{M}) where M<:POMDP
     for (bidx, b) in enumerate(tree.B)
         # Ignore if not expanded, already pruned or initial belief
         (!(tree.B_expanded[bidx]) || !(tree.B_pointset[bidx]) || bidx==1) && continue
@@ -264,7 +267,7 @@ function prune_beliefs!_(tree::RHSVITree)
     end
 end
 
-function prune_beliefs!(tree::RHSVITree)
+function prune_beliefs!(tree::RHSVITree{M}) where M<:POMDP
     epsilon = 0.005
     for (bidx, b) in enumerate(tree.B)
         # Ignore if not expanded, already pruned or initial belief
@@ -302,11 +305,12 @@ lowerbound(tree, bidx) = (maximum(alpha -> dot(alpha, tree.B[bidx]), tree.Alphas
 """
 Returns the upper value bound for a belief b.
 """
-function upperbound(tree, bidx::Int)
+function upperbound(tree::RHSVITree{M}, bidx::Int) where M<:POMDP
     isterminalbelief(tree.env,tree.B[bidx]) && return 0.0
-    tree.B_expanded[bidx] ? (Vup = maximum(aidx -> upperbound(tree, bidx, aidx), 1:tree.C.na)) : (Vup = Inf)
+    Vup::Float64 = sawtooth(tree, bidx)
+    tree.B_expanded[bidx] && (Vup = min(Vup, maximum(aidx -> upperbound(tree, bidx, aidx), 1:tree.C.na)))
     # return upperbound_VMDP(tree, bidx)
-    return min(Vup, sawtooth(tree, bidx))
+    return Vup
 end
 
 upperbound_VMDP(tree, bidx) = sum(s->pdf(tree.B[bidx],s)*tree.Vsupper[stateindex(tree.env, s)], support(tree.B[bidx]))
@@ -366,8 +370,8 @@ end
 """
 Returns the upper Q-value bound on belief b and action a.
 """
-function upperbound(tree, bidx, aidx)
-    Qupper = beliefreward(tree.env, tree.B[bidx], aidx)
+function upperbound(tree::RHSVITree{M}, bidx::Int64, aidx::Int64) where M<:POMDP
+    Qupper::Float64 = beliefreward(tree.env, tree.B[bidx], aidx)
     for succbelief in tree.Bps[bidx][aidx]
         bpidx, p = succbelief.bidx, succbelief.prob
         Qupper += p * discount(tree.env) * tree.Vupper[bpidx]
@@ -414,8 +418,8 @@ function tree_backup(tree, bidx; iteration::Int=0, add_alphas=true)
     # Update Lower bounds if necessary:
     if add_alphas && tree.needs_backup[bidx]
         for a in 1:tree.C.na
-            Qlower, alpha, Bdist = backup(tree.env, tree.B[bidx],a, tree.Alphas, version=tree.backup_version; prev_value=tree.Qlower[bidx][a])
-            if isnothing(alpha) && isnothing(Bdist)
+            Qlower, alpha, _Bdist = backup(tree.env, tree.B[bidx],a, tree.Alphas, version=tree.backup_version; prev_value=tree.Qlower[bidx][a])
+            if Qlower==NoBackup()
                 Vlower = max(Vlower, tree.Qlower[bidx][a])
             else
                 tree.Qlower[bidx][a] = Qlower

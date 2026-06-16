@@ -139,8 +139,8 @@ function breward(model::POMDP, b::DiscreteHashedBelief,a)
     return r
 end
 
-function beliefreward(env::X, b::DiscreteHashedBelief, a) where X<:POMDP
-    rewards = map(s -> reward(env,s,a), b.state_list)
+function beliefreward(env::X, b::DiscreteHashedBelief, a::Int64) where X<:POMDP
+    rewards::Vector{Float64} = map(s -> reward(env,s,a), b.state_list)
     return sum(rewards .* b.probs)
 end
 

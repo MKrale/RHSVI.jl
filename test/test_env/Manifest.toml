@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "f97522a78b8f6dc50eb5b087cd223a36cce755eb"
+project_hash = "6a6a686c94dc1a55a7715424a37337b1e36bd17c"
 
 [[deps.AbstractTrees]]
 git-tree-sha1 = "2d9c9a55f9c93e8887ad391fbae72f8ef55e1177"
@@ -846,7 +846,7 @@ uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 version = "1.11.0"
 
 [[deps.RHSVI]]
-deps = ["Clp", "Combinatorics", "Distributions", "Gurobi", "IntervalArithmetic", "JuMP", "LRUCache", "Memoize", "POMDPTools", "POMDPs", "RPOMDPs", "Random"]
+deps = ["Clp", "Combinatorics", "Distributions", "Gurobi", "InteractiveUtils", "IntervalArithmetic", "JuMP", "LRUCache", "Memoize", "POMDPTools", "POMDPs", "RPOMDPs", "Random"]
 path = "../.."
 uuid = "7d4c78ca-f647-492d-a5fe-ed5856807cff"
 version = "1.0.0-DEV"

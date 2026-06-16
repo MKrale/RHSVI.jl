@@ -1,5 +1,5 @@
 module RHSVI
-    using POMDPs, POMDPTools, Distributions, Random, Memoize, LRUCache, Combinatorics, IntervalArithmetic
+    using POMDPs, POMDPTools, Distributions, Random, Memoize, LRUCache, Combinatorics, IntervalArithmetic, InteractiveUtils
     using JuMP, Clp, Gurobi
     using RPOMDPs      
 

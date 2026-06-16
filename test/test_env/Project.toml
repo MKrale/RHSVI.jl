@@ -2,6 +2,7 @@
 ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
 D3Trees = "e3df1716-f71e-5df9-9e2d-98e193103c45"
 FlameGraphs = "08572546-2f56-4bcf-ba4e-bab62c3a3f89"
+InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 MCTS = "e12ccd36-dcad-5f33-8774-9175229e7b33"
 POMDPModels = "355abbd5-f08e-5560-ac9e-8b5f2592a0ca"

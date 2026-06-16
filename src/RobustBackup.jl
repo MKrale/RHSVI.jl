@@ -6,6 +6,7 @@ function backup(env::M, b::DiscreteHashedBelief, a::Int64, Alphas::Vector{AlphaV
     return robust_backup(env,b,a,Alphas; prev_value=prev_value)
 end
 
+struct NoBackup end
 global EPSILON_OPTIMALITY = 0.001
 
 ##################################################################
@@ -20,7 +21,7 @@ function osogami_backup(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{
 
     ### If terminal, return 0's
     if isterminalbelief(env,b)
-        return 0.0, AlphaVector(zeros(length(Ss)), Ss, a), SparseCat([(observations(env)[1], b)], [1.0])
+        return 0.0, AlphaVector(zeros(length(Ss)), Ss, a), SparseCat([(1, b)], [1.0])
     end
 
     ### Compute worst-case transition
@@ -105,8 +106,8 @@ function osogami_get_alpha(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas, T, Q
     Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
     nS, nSp, nO = length(Ss), length(Sps), length(Os)
     alphastar = zeros(length(Ss))
-    bos = []
-    bo_probs = []
+    bos::Vector{Tuple{Int64,DiscreteHashedBelief}} = Tuple{Int64,DiscreteHashedBelief}[]
+    bo_probs::Vector{Float64} = Float64[]
     for (oidx, o) in enumerate(Os)
         # Compute and store belief given worst-case dynamics
         bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:nS), 1:nSp)
@@ -132,8 +133,10 @@ function osogami_get_alpha(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas, T, Q
     end
 
     alphastar = discount(env) .* alphastar .+ map(s -> reward(env,s,a), Ss)
-    alphastar = AlphaVector(alphastar, Ss, a)
-    return dot(alphastar,b), alphastar, SparseCat(bos, bo_probs)
+    alphastar::AlphaVector = AlphaVector(alphastar, Ss, a)
+    Q::Float64 = dot(alphastar,b)
+    Bo_dist::SparseCat{Vector{Tuple{Int,DiscreteHashedBelief}}, Vector{Float64}} = SparseCat(bos, bo_probs)
+    return Q, alphastar, Bo_dist
 end
 
 ##################################################################
@@ -148,16 +151,19 @@ function robust_backup(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, Alphas::V
     Alphas::Vector{AlphaVector} = Alphas[map(alpha -> support_has_overlap(alpha, Sps), Alphas)]
 
     if isterminalbelief(env,b)
-        return 0.0, AlphaVector(zeros(length(Ss)), Ss, a), SparseCat([(observations(env)[1], b)], [1.0])
+        return 0.0, AlphaVector(zeros(length(Ss)), Ss, a), SparseCat([(1, b)], [1.0])
     end
 
     ### 2 - Get initial worst-case nature via Osogami
     bestQ::Float64, Qos::Vector{Float64}, T::Array{Float64,3} = osogami_get_nature(env,b,a,Alphas)
 
     ### 3: Skip if value equals previous value
-    val_q = (sum(s -> pdf(b,s) * reward(env,s,a), Ss) + discount(env) * bestQ)
+    val_q::Float64 = (sum(s -> pdf(b,s) * reward(env,s,a), Ss) + discount(env) * bestQ)
     if isapprox(val_q, prev_value; rtol=EPSILON_OPTIMALITY)
-        return val_q, nothing, nothing
+        Q::NoBackup = NoBackup()
+        empty_alpha::AlphaVector = AlphaVector([-32.0], [-32], -32)
+        empty_distr::SparseCat{Vector{Tuple{Int,DiscreteHashedBelief}}, Vector{Float64}} = SparseCat([(1,DiscreteHashedBelief([-32], [1.0]))], [1.0])
+        return Q, empty_alpha, empty_distr
     end
     
     ### 5 - Construct optimal alpha-vector for each observation
@@ -173,8 +179,7 @@ function robust_backup(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, Alphas::V
     bestQ, Qos, T = get_nature_robust(env, b, a, optimal_alphas, Alphas)
 
     ### 7 - (Re)compute beliefs & combined alpha-vector
-    alpha = get_alpha_robust(env, b, a, optimal_alphas, bestQ, T, Qos)
-    return alpha
+    return get_alpha_robust(env, b, a, optimal_alphas, bestQ, T, Qos)
 end
 
 function make_smallest_optimal_subset(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, Alphas::Vector{AlphaVector}, val::Float64)
@@ -350,9 +355,9 @@ end
 function get_alpha_robust(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, optimal_alphas::Vector{AlphaVector}, bestQ::Float64, T, Qos)
     Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
     nS, nSp, nO = length(Ss), length(Sps), length(Os)
-    alphastar = zeros(length(Ss))
-    bos = []
-    bo_probs = []
+    alphastar::Vector{Float64} = zeros(length(Ss))
+    bos::Vector{Tuple{Int64, DiscreteHashedBelief}} = Tuple{Int64, DiscreteHashedBelief}[]
+    bo_probs::Vector{Float64} = Float64[]
     for (oidx, o) in enumerate(Os)
         ### Compute and store belief given worst-case dynamics
         bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:nS), 1:nSp)
@@ -389,16 +394,17 @@ function get_alpha_robust(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, optima
     end
     ### Refactor
     alphastar = discount(env) .* alphastar .+ map(s -> reward(env,s,a), Ss)
-    alphastar = AlphaVector(alphastar, Ss, a)
+    alphastar_vec::AlphaVector = AlphaVector(alphastar, Ss, a)
 
     val_q = (sum(s -> pdf(b,s) * reward(env,s,a), Ss) + discount(env) * bestQ)
-    if abs((val_q - dot(alphastar, b)) / val_q) > 0.05 && val_q > 0.01
-        println("Error: value of α* ($(dot(alphastar, b))) is not equal to worst-case value ($(val_q))")
-        println("b=$b, alphastar=$(alphastar), $b")
+    if abs((val_q - dot(alphastar_vec, b)) / val_q) > 0.05 && val_q > 0.01
+        println("Error: value of α* ($(dot(alphastar_vec, b))) is not equal to worst-case value ($(val_q))")
+        println("b=$b, alphastar=$(alphastar_vec), $b")
         println("================")
     end
-
-    return dot(alphastar,b), alphastar, SparseCat(bos, bo_probs)
+    Q::Float64 = dot(alphastar_vec,b)
+    Bo_dist::SparseCat{Vector{Tuple{Int,DiscreteHashedBelief}}, Vector{Float64}} = SparseCat(bos, bo_probs)
+    return Q, alphastar_vec, Bo_dist
 end
 
 function get_nature_robust(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, optimal_alphas::Vector{AlphaVector}, Alphas::Vector{AlphaVector})
@@ -446,13 +452,14 @@ function pomdp_backup(env::POMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:A
     Alphas = Alphas[map(a -> support_has_overlap(a, Sps), Alphas)]
 
     if isterminalbelief(env,b)
-        return 0.0, AlphaVector(zeros(length(Ss)), Ss, a), SparseCat([(observations(env)[1], b)], [1.0])
+        return 0.0, AlphaVector(zeros(length(Ss)), Ss, a), SparseCat([(1, b)], [1.0])
     end
 
     Prob_o_given_sp = [pdf(observation(env,a,sp), o) for (o,sp) in Iterators.product(Os, Sps)]
     Prob_sp_given_s = [pdf(transition(env,s,a), sp) for (sp,s) in Iterators.product(Sps, Ss)]
     
-    Bs, B_probs = [], []
+    Bs::Vector{Tuple{Int,DiscreteHashedBelief}} = Tuple{Int,DiscreteHashedBelief}[]
+    B_probs::Vector{Float64} = Float64[]
     alphastar = map(s -> reward(env,s,a), Ss)
     for (oidx,o) in enumerate(Os)
         bo_vector = map(spidx -> sum(sidx -> pdf(b, Ss[sidx]) * Prob_sp_given_s[spidx,sidx] * Prob_o_given_sp[oidx,spidx], 1:nS), 1:nSp)
@@ -467,7 +474,8 @@ function pomdp_backup(env::POMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:A
         end
     end
 
-    alpha = AlphaVector(alphastar, Ss, a)
-
-    return dot(alpha, b), alpha, SparseCat(Bs, B_probs)
+    alpha::AlphaVector = AlphaVector(alphastar, Ss, a)
+    Q::Float64 = dot(alpha,b)
+    Bo_dist::SparseCat{Vector{Tuple{Int,DiscreteHashedBelief}}, Vector{Float64}} = SparseCat(Bs, B_probs)
+    return Q, alpha, Bo_dist
 end

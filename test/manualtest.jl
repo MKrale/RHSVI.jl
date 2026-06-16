@@ -1,7 +1,7 @@
 using RHSVI,RPOMDPs
 using POMDPs, .RPOMDPs, ArgParse, POMDPTools, JSON, POMDPModels, RockSample, MCTS, Statistics
 # The following clash: uncomment only one!
-using Profile, FlameGraphs, ProfileSVG
+using Profile, FlameGraphs, ProfileSVG, InteractiveUtils
 using D3Trees
 
 s = ArgParseSettings()
@@ -285,10 +285,10 @@ for (m_idx,(env, envargs)) in enumerate(zip(envs, envsargs))
         for rtype in rtypes
 
             ### Precompile
-            # verbose && println("\nPrecompiling...")
-            # precompsolver = solver(;precomp_solverargs[s_idx].sargs...)
-            # precomp_env_solver = get_simplified_model(env,rtype)
-            # _policy, _info = solve_info(precompsolver, precomp_env_solver; precomp_solverargs[s_idx].pargs...) #Force precompile
+            verbose && println("\nPrecompiling...")
+            precompsolver = solver(;precomp_solverargs[s_idx].sargs...)
+            precomp_env_solver = get_simplified_model(env,rtype)
+            _policy, _info = solve_info(precompsolver, precomp_env_solver; precomp_solverargs[s_idx].pargs...) #Force precompile
 
             # Run policy
             verbose && println("\nRunning $(solverarg.name) using $rtype robustness")
