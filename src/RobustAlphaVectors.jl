@@ -23,9 +23,11 @@ end
 ##################################################################
 
 function Base.getindex(a::AlphaVector, s::Int64)
-    sidx = findfirst(isequal(s), a.states)
-    sidx isa Nothing && return -10^10
-    return a.α[sidx]
+    possible_ks = searchsorted(a.states, s)
+    for k in possible_ks
+        a.states[k] == s && return a.α[k]
+    end
+    return -10^10
 end
 Base.getindex(a::AlphaVector, Ss::AbstractArray) = map(s -> getindex(a,s), Ss)
 
@@ -99,7 +101,7 @@ RANDOMIZE_EPSILON = 1e-3
 @kwdef struct RobustAlphaVectorPolicy <: Policy 
     env::X where X<:POMDP           # (R)POMDP model
     alphas::Vector{AlphaVector}     # List of alpha-vectors, assumed sorted according to actions
-    aidxs::Vector{Any}              # Indexes of alpha-vectors with a given action (usefull for updates)
+    aidxs::Vector{Vector{Int64}}    # Indexes of alpha-vectors with a given action (usefull for updates)
     custom_memory_update = nothing
 end
 
@@ -118,7 +120,7 @@ function RobustAlphaVectorPolicy(env, alphas; custom_memory_update=nothing)
 end
 
 """Returns vector of probabilities for playing the given alpha-vectors"""
-function stochastic_choice_alphas(b, alphas)
+function stochastic_choice_alphas(b::DiscreteHashedBelief, alphas::Vector{AlphaVector})
 
     if length(alphas) == 1
         return [1.0]
@@ -220,13 +222,13 @@ end
 POMDPs.action(π::RobustAlphaVectorPolicy,b) = first(action_value(π,b))
 POMDPs.value(π::RobustAlphaVectorPolicy,b) = last(action_value(π,b))
 
-get_memory_type(π::RobustAlphaVectorPolicy) = DiscreteHashedBelief
-function get_initial_memory(π::RobustAlphaVectorPolicy)
+RPOMDPs.get_memory_type(π::RobustAlphaVectorPolicy) = DiscreteHashedBelief
+function RPOMDPs.get_initial_memory(π::RobustAlphaVectorPolicy)
     b0 = initialstate(π.env)
     return DiscreteHashedBelief(support(b0), map(s->pdf(b0,s), support(b0)))
 end
 
-update_memory(π::RobustAlphaVectorPolicy, b, a, o) = update_memory(π,DiscreteHashedBelief(b),a,o)
+RPOMDPs.update_memory(π::RobustAlphaVectorPolicy, b, a, o) = update_memory(π,DiscreteHashedBelief(b),a,o)
 @memoize LRU(maxsize=100_000) function update_memory(π::RobustAlphaVectorPolicy, b::DiscreteHashedBelief, a, o)
     !isnothing(π.custom_memory_update) && (return π.custom_memory_update(π,b,a,o))
     Q_, alpha_, Bdistr = backup(π.env,b,a,π.alphas)

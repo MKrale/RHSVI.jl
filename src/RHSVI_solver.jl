@@ -17,7 +17,7 @@ VERBOSE = true
 end
 
 # TODO: add outer loop to build a new tree after this one is sufficiently accurate
-function POMDPs.solve(solver::RHSVISolver, env::X) where X<:POMDP
+function POMDPs.solve(solver::RHSVISolver, env::X; return_pointset = false) where X<:POMDP
     t0 = time()
     VERBOSE && println("Initializing...")
 
@@ -25,6 +25,10 @@ function POMDPs.solve(solver::RHSVISolver, env::X) where X<:POMDP
         if env isa IPOMDP{<:Any,<:Any,<:Any}
             VERBOSE && println("Converting environment to Index_IPOMDP...")
             env = Index_IPOMDP(env)
+            VERBOSE && println("Done. (Note: policy may require additional wrappers to run on the original env!))")
+        elseif !(env isa RPOMDP{<:Any,<:Any,<:Any})
+            VERBOSE && println("Converting environment to Index_POMDP...")
+            env = Index_POMDP(env)
             VERBOSE && println("Done. (Note: policy may require additional wrappers to run on the original env!))")
         else
             println("Warning: could not convert $(typeof(env)) to known modeltype. This solver might break if environment spaces are not defined as integers.")
@@ -54,7 +58,7 @@ function POMDPs.solve(solver::RHSVISolver, env::X) where X<:POMDP
         if (mod(i,solver.init_iters * floor(1.5^j)) == 0) #|| tree.T_error[1] > 2
             VERBOSE && println("Resetting tree at $i iterations:")
             Alphas = pruneAlphas(tree.Alphas, tree.B[tree.B_pointset])
-            tree = initialize_RHSVITree(env,solver;Alphas=Alphas, Vs_init=tree.Vsupper)
+            tree = initialize_RHSVITree(env,solver;Alphas=Alphas, Vs_init=tree.Vsupper, extra_beliefs=tree.extra_beliefs, extra_upper_values=tree.extra_upper_values)
             j += 1
         end
     end
@@ -66,7 +70,14 @@ function POMDPs.solve(solver::RHSVISolver, env::X) where X<:POMDP
             println(alpha)
         end
     end
-    return RobustAlphaVectorPolicy(tree.env, tree.Alphas)
+
+    policy = RobustAlphaVectorPolicy(tree.env, tree.Alphas)
+
+    !return_pointset && (return policy)
+
+    beliefs = tree.B[tree.B_pointset]
+    values = tree.Vupper[tree.B_pointset]
+    return beliefs, values, policy
 end
 
 #########################################
@@ -83,31 +94,50 @@ end
     env
     C::ModelSizes
 
-    B::Vector{DiscreteHashedBelief}             = [] 
-    Bps::Vector{Vector{Vector{SucessorBelief}}} = []
-    Vupper::Vector{Float64}                     = []
-    Vsupper::Vector{Float64}                    = []
-    Vlower::Vector{Float64}                     = []
-    Qupper::Vector{Vector{Float64}}             = []
-    Qlower::Vector{Vector{Float64}}             = []
-    Uncertainty::Vector{Float64}                = []
+    B::Vector{DiscreteHashedBelief}             = DiscreteHashedBelief[] 
+    Bps::Vector{Vector{Vector{SucessorBelief}}} = Vector{Vector{Vector{SucessorBelief}}}()
+    Vupper::Vector{Float64}                     = Float64[]
+    Vsupper::Vector{Float64}                    = Float64[]
+    Vlower::Vector{Float64}                     = Float64[]
+    Qupper::Vector{Vector{Float64}}             = Vector{Vector{Float64}}()
+    Qlower::Vector{Vector{Float64}}             = Vector{Vector{Float64}}()
+    Uncertainty::Vector{Float64}                = Vector{Vector{Float64}}()
 
-    needs_backup::Vector{Bool}                  = []
+    needs_backup::Vector{Bool}                  = Bool[]
 
-    Alphas::Vector{AlphaVector}          = AlphaVector[]
-    Alphas_protected::Int                       = 1
-    B_pointset::BitVector                       = []
-    B_expanded::BitVector                       = []
-    backup_version                              = CONVEX_BACKUP
+    Alphas::Vector{AlphaVector}                 = AlphaVector[]
+    Alphas_protected::Int                            = 1
+    B_pointset::BitVector                 = BitVector()
+    B_expanded::BitVector                 = BitVector()
+    backup_version                                          = CONVEX_BACKUP
+
+    extra_beliefs                                           = DiscreteHashedBelief[]
+    extra_upper_values                                      = Float64[]
 end
 
-function initialize_RHSVITree(env::X, solver::RHSVISolver; Alphas=[], Vs_init=nothing) where X<:POMDP
+function initialize_RHSVITree(env::X, solver::RHSVISolver; Alphas=[], Vs_init=nothing, extra_beliefs=nothing, extra_upper_values=nothing) where X<:POMDP
     
     constants = ModelSizes(env)
     if Vs_init isa Nothing
         heuristic_policy = solve(solver.heuristic_solver, env)
         Vs_init = get_exterior_values(heuristic_policy)
     end
+
+    if isnothing(extra_beliefs) && isnothing(extra_upper_values)
+        if isa(env, RPOMDP)
+            VERBOSE && print("Solving non-robust variant...")
+            non_robust_pomdp = Index_POMDP(to_mid_POMDP(env))
+            prev_verbose = VERBOSE
+            global VERBOSE = false
+            non_robust_solver = RHSVISolver(max_time=solver.max_time/5, epsilon=solver.epsilon)
+            extra_beliefs, extra_upper_values, _policy = solve(non_robust_solver, non_robust_pomdp; return_pointset=true)
+            println(" Done! (Pointset of size $(length(extra_beliefs)) added)")
+            global VERBOSE = prev_verbose
+        else
+            extra_beliefs, extra_upper_values = [], []
+        end
+    end
+
     append!(Alphas, solve(solver.lowerbound_solver, env).alphas)
 
     tree = RHSVITree(
@@ -116,7 +146,9 @@ function initialize_RHSVITree(env::X, solver::RHSVISolver; Alphas=[], Vs_init=no
         Vsupper=Vs_init,
         Alphas = Alphas,
         Alphas_protected = length(Alphas),
-        backup_version = solver.backup_version
+        backup_version = solver.backup_version,
+        extra_beliefs = extra_beliefs,
+        extra_upper_values = extra_upper_values
     )
     b0 = DiscreteHashedBelief(initialstate(tree.env))
     initialize_node(tree, b0)
@@ -189,11 +221,11 @@ end
 """
 Expands a belief node: computes successor beliefs & Q-values.
 """
-function expand_node!(tree, bidx)
+function expand_node!(tree::RHSVITree, bidx::Int64)
     alphas = AlphaVector[]
     for a in 1:tree.C.na
         push!(tree.Bps[bidx], [])
-        Qlower, alpha, Bdist = backup(tree.env, tree.B[bidx], a, tree.Alphas, version=tree.backup_version)
+        Qlower::Float64, alpha::AlphaVector, Bdist = backup(tree.env, tree.B[bidx], a, tree.Alphas, version=tree.backup_version)
         push!(alphas, alpha)
         for ((o,bp),p) in weighted_iterator(Bdist)
             bpidx = initialize_node(tree, bp)
@@ -284,8 +316,7 @@ function sawtooth(tree, bidx::Int)
     b = tree.B[bidx]
     alpha_corner = AlphaVector(tree.Vsupper, collect(1:tree.C.ns), nothing)
     Vb = dot(alpha_corner, b)
-    Vmin = Vb   # <-- OUTPUT
-    ### NOT CURRENTLY USED:
+    Vmin = Vb
     for bint_idx in (1:length(tree.B))[tree.B_pointset]
         bint_idx == bidx && continue
         bint, vint = tree.B[bint_idx], tree.Vupper[bint_idx]
@@ -294,7 +325,19 @@ function sawtooth(tree, bidx::Int)
         if true #ratio > 0.0 #&& ratio < 1.0 
             thisV = Vb + ratio * (vint - dot(alpha_corner, bint))
         end
+        Vmin = min(Vmin, thisV)
     end
+
+    for (bint_idx, bint) in enumerate(tree.extra_beliefs)
+        vint = tree.extra_upper_values[bint_idx]
+        ratio = min_ratio(b,bint)
+        thisV = Inf
+        if true #ratio > 0.0 #&& ratio < 1.0 
+            thisV = Vb + ratio * (vint - dot(alpha_corner, bint))
+        end
+        Vmin = min(Vmin, thisV)
+    end
+
     return Vmin
 end
 

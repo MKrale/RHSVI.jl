@@ -4,7 +4,7 @@ using RPOMDPs, POMDPs, POMDPTools
 include("./tiger.jl")
 
 @testset "RHSVI.jl" begin
-    rpomdps = [Index_IPOMDP(RPOMDPs.ToyRPOMDP()), Index_IPOMDP(Test_Random()), Index_IPOMDP(ConfidencePOMDP(TigerPOMDP(), 0.1, AdditiveAbs()))]
+    rpomdps = [TigerPOMDP(), Index_IPOMDP(RPOMDPs.ToyRPOMDP()), Index_IPOMDP(Test_Random()), Index_IPOMDP(ConfidencePOMDP(TigerPOMDP(), 0.1, AdditiveAbs()))]
     values_min = [69, 0.38, 19.3]
     values_max = [70, 0.4, 20]
     for idx in eachindex(rpomdps)

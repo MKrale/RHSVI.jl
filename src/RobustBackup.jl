@@ -1,5 +1,6 @@
-function backup(env::M, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVector}; version::Int=CONVEX_BACKUP, prev_value=-Inf) where M<:IPOMDP
+function backup(env::M, b::DiscreteHashedBelief, a::Int64, Alphas::Vector{AlphaVector}; version::Int=CONVEX_BACKUP, prev_value=-Inf) where M<:POMDP
     """Performs a robust backup."""
+    !isa(env, RPOMDP) && isa(env, POMDP) && (return pomdp_backup(env,b,a,Alphas))
     version == OSOGAMI_BACKUP && return osogami_backup(env,b,a,Alphas)
     version != CONVEX_BACKUP && println("Error: backup version not recognized! Using Convex Backup.")
     return robust_backup(env,b,a,Alphas; prev_value=prev_value)
@@ -11,7 +12,7 @@ global EPSILON_OPTIMALITY = 0.001
 #                       Osogami Backup
 ##################################################################
 
-function osogami_backup(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVector})
+function osogami_backup(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{AlphaVector})
     ### Simplify
     b = approximate_belief(b)
     Ss, Sps, Os = get_relevant_sets(env,support(b), a)
@@ -32,19 +33,22 @@ end
 """
 Computes a worst-case (but non least-permissive) transition based on Osogami (2015).
 """
-function osogami_get_nature(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVector})
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+function osogami_get_nature(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, Alphas::Vector{AlphaVector})
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS,nO,nSp = length(Ss), length(Os), length(Sps)
 
     ### Build base model
     model, ps = get_model_base(env,b,a)
 
     ### Add Optimality contraint: Qo corresponds to optimal next action
     # ∀α,o: Qo := P(o|b) * Q(bp|o) ≥ ∑ b(s) * ∑ P(sp,o|s) * α[sp]
-    @variable(model, Qo[1:length(Os)])
+    @variable(model, Qo[1:nO])
+    bprobs = [pdf(b,s) for s in Ss]
     for (oidx, o) in enumerate(Os)
         for alpha in Alphas
             if is_valid_alpha(env,alpha,a,o,Sps)
-                @constraint(model, Qo[oidx] >=  sum(sidx -> pdf(b,Ss[sidx]) .* sum(spidx -> ps[sidx,oidx,spidx] .* alpha[Sps[spidx]], 1:length(Sps)), 1:length(Ss) ))
+                alpha_values = [alpha[sp] for sp in Sps]
+                @constraint(model, Qo[oidx] >=  sum(bprobs[sidx] * ps[sidx,oidx,spidx] * alpha_values[spidx] for spidx in 1:nSp, sidx in 1:nS))
             end
         end
     end
@@ -52,15 +56,16 @@ function osogami_get_nature(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vec
     # Solve LP and extract relevant
     @objective(model, Min, sum(Qo))
     optimize!(model)
-    bestQ = objective_value(model)
-    Qos = JuMP.value.(Qo)
-    T = JuMP.value.(ps)[:,:,:]
+    bestQ::Float64 = objective_value(model)
+    Qos::Vector{Float64} = JuMP.value.(Qo)
+    T::Array{Float64,3} = JuMP.value.(ps)[:,:,:]
 
     return bestQ, Qos, T
 end
 
 function get_model_base(env::IPOMDP, b::DiscreteHashedBelief, a)
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS, nSp, nO = length(Ss), length(Sps), length(Os)
     As = actions(env)
 
     # model = Model(Clp.Optimizer; add_bridges=false)
@@ -74,7 +79,7 @@ function get_model_base(env::IPOMDP, b::DiscreteHashedBelief, a)
     # set_silent(model)
 
     # Set up LP (Osogami, Eq. 5)
-    @variable(model, 0.0 <= ps[1:length(Ss), 1:length(Os), 1:length(Sps)] <= 1.0)   # P(o,sp|s)
+    @variable(model, 0.0 <= ps[1:nS, 1:nO, 1:nSp] <= 1.0)   # P(o,sp|s)
     for (sidx, s) in enumerate(Ss)
         @constraint(model, sum(ps[sidx,:,:]) == 1.0)
     end
@@ -97,13 +102,14 @@ function get_model_base(env::IPOMDP, b::DiscreteHashedBelief, a)
 end
 
 function osogami_get_alpha(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas, T, Qos)
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS, nSp, nO = length(Ss), length(Sps), length(Os)
     alphastar = zeros(length(Ss))
     bos = []
     bo_probs = []
     for (oidx, o) in enumerate(Os)
         # Compute and store belief given worst-case dynamics
-        bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:length(Ss)), 1:length(Sps))
+        bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:nS), 1:nSp)
         prob = sum(bo_vector)
         bo = DiscreteHashedBelief(Sps, bo_vector ./ prob)
         push!(bos, (o, bo))
@@ -134,19 +140,19 @@ end
 #                       Robust Backup
 ##################################################################
 
-function robust_backup(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVector}; prev_value = -Inf)
+function robust_backup(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, Alphas::Vector{AlphaVector}; prev_value = -Inf)
     
     ### 1 - Setup   
-    b = approximate_belief(b)
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
-    Alphas = Alphas[map(alpha -> support_has_overlap(alpha, Sps), Alphas)]
+    b::DiscreteHashedBelief = approximate_belief(b)
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    Alphas::Vector{AlphaVector} = Alphas[map(alpha -> support_has_overlap(alpha, Sps), Alphas)]
 
     if isterminalbelief(env,b)
         return 0.0, AlphaVector(zeros(length(Ss)), Ss, a), SparseCat([(observations(env)[1], b)], [1.0])
     end
 
     ### 2 - Get initial worst-case nature via Osogami
-    bestQ, Qos, T = osogami_get_nature(env,b,a,Alphas)
+    bestQ::Float64, Qos::Vector{Float64}, T::Array{Float64,3} = osogami_get_nature(env,b,a,Alphas)
 
     ### 3: Skip if value equals previous value
     val_q = (sum(s -> pdf(b,s) * reward(env,s,a), Ss) + discount(env) * bestQ)
@@ -156,14 +162,10 @@ function robust_backup(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<
     
     ### 5 - Construct optimal alpha-vector for each observation
     # Prune all alphas that cannot be part of the minimal optimal set
-    possible_optimal_alphas = get_possibly_optimal_alphas(env, b, a, T, Qos, Alphas, epsilon=EPSILON_OPTIMALITY)
+    possible_optimal_alphas::Vector{AlphaVector} = get_possibly_optimal_alphas(env, b, a, T, Qos, Alphas, epsilon=EPSILON_OPTIMALITY)
     # With all remaining alphas, construct minimal optimal set
-    if length(possible_optimal_alphas) > 1
-        optimal_alphas, new_T = make_smallest_optimal_subset(env,b,a,possible_optimal_alphas, bestQ)
-        !isnothing(new_T) && (T = new_T)
-    else
-        optimal_alphas = possible_optimal_alphas
-    end
+    optimal_alphas::Vector{AlphaVector}, new_T::Union{Nothing,Array{Float64,3}} = make_smallest_optimal_subset(env,b,a,possible_optimal_alphas, bestQ)
+    !isnothing(new_T) && (T = new_T)
     length(optimal_alphas) == 0 && println("Error: no optimal alpha-vectors found!")
     # println("Q=$bestQ, a=$a, b=$b, alphas=$optimal_alphas")
 
@@ -175,9 +177,15 @@ function robust_backup(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<
     return alpha
 end
 
-function make_smallest_optimal_subset(env::IPOMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVector}, val::Float64)
+function make_smallest_optimal_subset(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, Alphas::Vector{AlphaVector}, val::Float64)
+    
+    if length(Alphas) == 1
+        return Alphas, nothing
+    end
+    
     b = approximate_belief(b)
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS, nSp, nO = length(Ss), length(Sps), length(Os)
     L = length(Alphas)
     epsilon = 0.005
     slackify = (v -> min(v*(1+epsilon), v*(1-epsilon)))
@@ -203,17 +211,18 @@ function make_smallest_optimal_subset(env::IPOMDP, b::DiscreteHashedBelief, a, A
     # order buckets so the one with the smallest diff comes first
     vs = sort(alphas_combined, by = v -> isempty(v) ? Inf : (maximum(s -> v[1][s], Sps) - minimum(s -> v[1][s], Sps)))
     # round-robin merge
-    Alphas = [v[i] for i in 1:maximum(length.(vs)) for v in vs if length(v) ≥ i]
+    Alphas::Vector{AlphaVector} = [v[i] for i in 1:maximum(length.(vs)) for v in vs if length(v) ≥ i]
+    nA = length(Alphas)
 
     ### Build Model:
     model, ps = get_model_base(env, b, a)
-    @variable(model, Qoalpha[1:length(Os), 1:length(Alphas)])
-    @variable(model, alpha_valid[1:length(Alphas)], Bin)
-    @variable(model, Qo[1:length(Os)])
+    @variable(model, Qoalpha[1:nO, 1:nA])
+    @variable(model, alpha_valid[1:nA], Bin)
+    @variable(model, Qo[1:nO])
     constraints = []
     for (oidx, o) in enumerate(Os)
         for (alphaidx, alpha) in enumerate(Alphas)
-            @constraint(model, Qoalpha[oidx, alphaidx] >= sum(sidx -> pdf(b,Ss[sidx]) .* sum(spidx -> ps[sidx,oidx,spidx] .* alpha[Sps[spidx]], 1:length(Sps)), 1:length(Ss) ))
+            @constraint(model, Qoalpha[oidx, alphaidx] >= sum(sidx -> pdf(b,Ss[sidx]) .* sum(spidx -> ps[sidx,oidx,spidx] .* alpha[Sps[spidx]], 1:nSp), 1:nS ))
             push!(constraints, @constraint(model, Qo[oidx] >= Qoalpha[oidx, alphaidx] - bigM * (1-alpha_valid[alphaidx])))
         end
     end
@@ -242,7 +251,7 @@ function make_smallest_optimal_subset(env::IPOMDP, b::DiscreteHashedBelief, a, A
 end
 
 # Note: prunes per observation (otherwise we can't compare to expected value)
-function prune_possibly_optimal_alphas(Sps, Qo, Alphas, epsilon=0.005)
+function prune_possibly_optimal_alphas(Sps::Vector{Int64}, Qo::Float64, Alphas::Vector{AlphaVector}, epsilon=0.005)
     Qo = min(Qo * (1+epsilon), Qo * (1-epsilon))
     alphas_mask = trues(length(Alphas))
     for (aidx1, alpha1) in enumerate(Alphas)
@@ -275,7 +284,7 @@ function prune_possibly_optimal_alphas(Sps, Qo, Alphas, epsilon=0.005)
     return Alphas[alphas_mask]
 end
 
-function prune_epsilon_close_alphas(Alphas, epsilon)
+function prune_epsilon_close_alphas(Alphas::Vector{AlphaVector}, epsilon)
     alphas_mask = trues(length(Alphas))
     for (aidx1, alpha1) in enumerate(Alphas)
         !alphas_mask[aidx1] && continue
@@ -295,14 +304,15 @@ function prune_epsilon_close_alphas(Alphas, epsilon)
     return Alphas[alphas_mask]        
 end
 
-function get_possibly_optimal_alphas(env::IPOMDP, b::DiscreteHashedBelief, a, T, Qos, Alphas::Vector{<:AlphaVector}; epsilon = 0.001)
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+function get_possibly_optimal_alphas(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, T::Array{Float64,3}, Qos::Vector{Float64}, Alphas::Vector{AlphaVector}; epsilon = 0.001)
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS, nSp, nO = length(Ss), length(Sps), length(Os)
     bos = []
     bo_probs = []
     all_optimal_alphas = Set{AlphaVector}([])
     for (oidx, o) in enumerate(Os)
         ### Compute worst-case belief given observation
-        bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:length(Ss)), 1:length(Sps))
+        bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:nS), 1:nSp)
         prob = sum(bo_vector)
         bo = DiscreteHashedBelief(Sps, bo_vector ./ prob)
         push!(bos, (o, bo))
@@ -310,11 +320,11 @@ function get_possibly_optimal_alphas(env::IPOMDP, b::DiscreteHashedBelief, a, T,
 
         ### Find (epsilon-) optimal alpha-vectors
         Qo = Qos[oidx] / prob
-        alphas, min_error = [], Inf
+        alphas, min_error = AlphaVector[], Inf
         for (alphaidx, alpha) in enumerate(Alphas)
             error = abs((dot(alpha, bo) - Qo) / (Qo + epsilon))
             if error <= min_error - epsilon
-                alphas = []
+                alphas = AlphaVector[]
                 push!(alphas, alpha)
                 min_error = error
             elseif error <= min_error + epsilon
@@ -337,14 +347,15 @@ end
 #   Backup 
 ###
 
-function get_alpha_robust(env::IPOMDP, b::DiscreteHashedBelief, a, optimal_alphas, bestQ, T, Qos)
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+function get_alpha_robust(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, optimal_alphas::Vector{AlphaVector}, bestQ::Float64, T, Qos)
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS, nSp, nO = length(Ss), length(Sps), length(Os)
     alphastar = zeros(length(Ss))
     bos = []
     bo_probs = []
     for (oidx, o) in enumerate(Os)
         ### Compute and store belief given worst-case dynamics
-        bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:length(Ss)), 1:length(Sps))
+        bo_vector = map(spidx -> sum(sidx -> pdf(b,Ss[sidx]) * T[sidx,oidx,spidx], 1:nS), 1:nSp)
         prob = sum(bo_vector)
         bo = DiscreteHashedBelief(Sps, bo_vector ./ prob)
         push!(bos, (o, bo))
@@ -390,19 +401,29 @@ function get_alpha_robust(env::IPOMDP, b::DiscreteHashedBelief, a, optimal_alpha
     return dot(alphastar,b), alphastar, SparseCat(bos, bo_probs)
 end
 
-function get_nature_robust(env::IPOMDP, b::DiscreteHashedBelief, a, optimal_alphas, Alphas)
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+function get_nature_robust(env::IPOMDP, b::DiscreteHashedBelief, a::Int64, optimal_alphas::Vector{AlphaVector}, Alphas::Vector{AlphaVector})
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS, nSp, nO = length(Ss), length(Sps), length(Os)
+    nA = length(Alphas)
     min_val = minimum(alpha -> minimum(alpha.α), Alphas)
     model, ps = get_model_base(env,b,a)
-    @variable(model, Qo[1:length(Os)] >= min_val)
-    @variable(model, Qo_suboptimal[1:length(Os)] >= min_val) # value of the best sub-optimal alpha-vector for each observation.
+    @variable(model, Qo[1:nO] >= min_val)
+    @variable(model, Qo_suboptimal[1:nO] >= min_val) # value of the best sub-optimal alpha-vector for each observation.
     @variable(model, max_Qo_suboptimal >= min_val)
+
+    bprob = [pdf(b, s) for s in Ss]
+
     for (oidx, o) in enumerate(Os)
         @constraint(model, max_Qo_suboptimal >= Qo_suboptimal[oidx])
-        for alpha in Alphas
-            @constraint(model, Qo[oidx] >= sum(sidx -> pdf(b,Ss[sidx]) .* sum(spidx -> ps[sidx,oidx,spidx] .* alpha[Sps[spidx]], 1:length(Sps)), 1:length(Ss) ))
-            if !(alpha in optimal_alphas)
-                @constraint(model, Qo_suboptimal[oidx] >= sum(sidx -> pdf(b,Ss[sidx]) .* sum(spidx -> ps[sidx,oidx,spidx] .* alpha[Sps[spidx]], 1:length(Sps)), 1:length(Ss) ))
+        for (aidx, alpha) in enumerate(Alphas)
+            if is_valid_alpha(env,alpha,a,o,Sps)
+                alpha_values = [alpha[sp] for sp in Sps]
+                expr = @expression(model, sum(bprob[sidx] * alpha_values[spidx] * ps[sidx, oidx, spidx] for sidx in 1:nS, spidx in 1:nSp) )
+                @constraint(model, Qo[oidx] >= expr)
+
+                if !(alpha in optimal_alphas)
+                    @constraint(model, Qo_suboptimal[oidx] >= expr)
+                end
             end
         end
     end
@@ -418,9 +439,10 @@ end
 #                       POMDP Backup
 ##################################################################
 
-function backup(env::POMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVector})
+function pomdp_backup(env::POMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVector})
     # Get relevant variables:
-    Ss, Sps, Os = get_relevant_sets(env,support(b), a)
+    Ss::Vector{Int64}, Sps::Vector{Int64}, Os::Vector{Int64} = get_relevant_sets(env,support(b), a)
+    nS, nSp, nO = length(Ss), length(Sps), length(Os)
     Alphas = Alphas[map(a -> support_has_overlap(a, Sps), Alphas)]
 
     if isterminalbelief(env,b)
@@ -433,7 +455,7 @@ function backup(env::POMDP, b::DiscreteHashedBelief, a, Alphas::Vector{<:AlphaVe
     Bs, B_probs = [], []
     alphastar = map(s -> reward(env,s,a), Ss)
     for (oidx,o) in enumerate(Os)
-        bo_vector = map(spidx -> sum(sidx -> pdf(b, Ss[sidx]) * Prob_sp_given_s[spidx,sidx] * Prob_o_given_sp[oidx,spidx], 1:length(Ss)), 1:length(Sps))
+        bo_vector = map(spidx -> sum(sidx -> pdf(b, Ss[sidx]) * Prob_sp_given_s[spidx,sidx] * Prob_o_given_sp[oidx,spidx], 1:nS), 1:nSp)
         prob = sum(bo_vector)
         bo_vector = bo_vector ./ prob
         bo = DiscreteHashedBelief(Sps, bo_vector)

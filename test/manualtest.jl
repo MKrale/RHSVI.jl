@@ -39,7 +39,7 @@ s = ArgParseSettings()
     "--evaltime"
         help = "Max time for evalutation stage"
         arg_type = Float64
-        default = 30.0
+        default = 60.0
 
     "--evalnmbr"
         help = "Nmbr of times evaluation is run"
@@ -67,9 +67,9 @@ end
 parsed_args = parse_args(ARGS, s)
 env_names = [parsed_args["env"]]
 rtypes = [parsed_args["rtype"]]
-rtypes == ["all"] && (rtypes = ["full", "maxent", "mid", "rmdp"])
+rtypes == ["all"] && (rtypes = ["full"]) ##, "maxent", "mid", "rmdp"])
 solver_names = [parsed_args["solvers"]]
-solver_names == ["all"] && (solver_names = ["RFIB", "RHSVI"])
+solver_names == ["all"] && (solver_names = ["RHSVI"])
 path = parsed_args["path"]
 filename = parsed_args["filename"]
 evaltime = parsed_args["evaltime"]
@@ -104,7 +104,7 @@ precompile = parsed_args["precompile"]
 ##################################################################
 
 solvers, solverargs, precomp_solverargs = [], [], []
-bounds_steps, precision = 10_000, 2e-2
+bounds_steps, precision = 10_000, 1e-2
 
 if "RQMDP" in solver_names
     push!(solvers, RQMDPSolver)
@@ -277,6 +277,7 @@ verbose = true
 
 for (m_idx,(env, envargs)) in enumerate(zip(envs, envsargs))
     verbose && println("Testing in $(envargs.name) environment")
+    env = Index_IPOMDP(env)
 
 
 
@@ -284,10 +285,10 @@ for (m_idx,(env, envargs)) in enumerate(zip(envs, envsargs))
         for rtype in rtypes
 
             ### Precompile
-            verbose && println("\nPrecompiling...")
-            precompsolver = solver(;precomp_solverargs[s_idx].sargs...)
-            precomp_env_solver = get_simplified_model(env,rtype)
-            _policy, _info = solve_info(precompsolver, precomp_env_solver; precomp_solverargs[s_idx].pargs...) #Force precompile
+            # verbose && println("\nPrecompiling...")
+            # precompsolver = solver(;precomp_solverargs[s_idx].sargs...)
+            # precomp_env_solver = get_simplified_model(env,rtype)
+            # _policy, _info = solve_info(precompsolver, precomp_env_solver; precomp_solverargs[s_idx].pargs...) #Force precompile
 
             # Run policy
             verbose && println("\nRunning $(solverarg.name) using $rtype robustness")

@@ -97,7 +97,8 @@ function solvestep(_sol::RQMDPSolver, m::X, s, a, Qmax; return_belief=false) whe
 
     T = transition(m,s,a)
     Sp = support(transition(m,s,a))
-    @variable(model, p_s[1:length(Sp)])
+    nSp = length(Sp)
+    @variable(model, p_s[1:nSp])
     Qs = []
 
     for (i,sp) in enumerate(Sp)
@@ -261,15 +262,17 @@ function solvestep(_sol::RFIBSolver, m::IPOMDP,s,a,Q; return_belief=false)
     # Defining variables
     T = transition(m,s,a)
     Sp = support(T)
+    nSp = length(Sp)
     Sp_idxs = map(s->stateindex(m,s), Sp)
     O = observations(m)
+    nO = length(O)
     Q = Q[Sp_idxs,:]
 
     # Define LP variables Pr(sp), Pr(o) and b_o(sp), with elementary constraints
-    @variable(model, 0.0 <= prob_sp[1:length(Sp)] <= 1.0)
+    @variable(model, 0.0 <= prob_sp[1:nSp] <= 1.0)
     @constraint(model, sum(prob_sp) == 1.0)
 
-    @variable(model, 0.0 <= belief[1:length(O), 1:length(Sp)] <= 1.0)
+    @variable(model, 0.0 <= belief[1:nO, 1:nSp] <= 1.0)
     for (spidx, sp) in enumerate(Sp)
         @constraint(model, sum(belief[:,spidx]) == prob_sp[spidx])
     end
@@ -292,7 +295,7 @@ function solvestep(_sol::RFIBSolver, m::IPOMDP,s,a,Q; return_belief=false)
     end
 
     # Constraint: Each Qo must be computed using the best possible action
-    @variable(model, Qo[1:length(O)])
+    @variable(model, Qo[1:nO])
     for (oidx,o) in enumerate(O)
         for aidx in 1:length(actions(m))
             @constraint(model, Qo[oidx] >= sum(belief[oidx,:].* Q[:,aidx])) #Qo = Q-values for all sps given actions chosen after o

@@ -148,8 +148,8 @@ isterminalbelief(env::POMDP, b::DiscreteHashedBelief) = all(s->isterminal(env,s)
 
 """Sets all probabilities < min_val to 0 to prevent floating-point shenanigans."""
 function approximate_belief(b::DiscreteHashedBelief; min_val = 1e-6)
-    ss, probs = b.state_list, b.probs
-    prob_removed = 0.0
+    ss::Vector{Int64}, probs::Vector{Float64} = b.state_list, b.probs
+    prob_removed::Float64= 0.0
     for (sidx, s) in enumerate(ss)
         if probs[sidx] <= min_val
             prob_removed += probs[sidx]
@@ -177,12 +177,12 @@ end
 
 relevant_set_cache=LRU{Vector{Int64}, Vector{Int64}}(maxsize=1_000)
 """Returns 1) the support of b, 2) the possible next states given (b,a), and 3) the possible observations given (b,a). LRU cached."""
-function get_relevant_sets(env, belief_support::Vector{Int64}, a)
+function get_relevant_sets(env, belief_support::Vector{Int64}, a::Int64)
     belief_support = Tuple(belief_support)
     return get(relevant_set_cache, (belief_support,a), compute_relevant_sets(env,belief_support,a))
 end
 
-function compute_relevant_sets(env, belief_support, a)
+function compute_relevant_sets(env, belief_support::Tuple{Vararg{Int64}}, a::Int64)
     Ss, Sps, Os = Set{Int64}(), Set{Int64}(), Set{Int64}()
     for s in belief_support
         push!(Ss, s)
